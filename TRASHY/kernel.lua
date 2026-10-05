@@ -308,4 +308,5 @@ while true do
             error("Cosmic ray detected in driver stack! coroutine:"..coroutine.status(v))
         end
     end
+    coroutine.yield()
 end
