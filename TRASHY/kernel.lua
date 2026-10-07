@@ -112,12 +112,13 @@ local function launchProgram(path,...progargs)
                 end
             end)
             if not worked then
-                error("Failure while loading program "..path.."! Err="..progFunc,0);
+                error("Failure while loading program "..path.."! Err="..progFunc,0)
             else
+				--debug.sethook(progFunc,coroutine.yield,"l",100)
 				local progTab = {
 					c=progFunc,
 					e={},
-					p=false
+					p=false--true
 				}
                 table.insert(coroutineStack,progTab)
             end
