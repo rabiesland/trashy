@@ -89,47 +89,9 @@ local function sleep(time)
     end
     return chip.getUnixTime()-start
 end
-local function input()
-    local str = ""
-    while true do
-        local sizeX,sizeY = vterm.getSize()
-        local posX,posY = vterm.getCursorPos()
-        local n = yield()["user"]
-        if n and n[1] == "keyPressed" then
-            if n[2] == 13 then
-                vterm.print()
-                break
-            elseif n[2] == 8 then
-                if #str ~= 0 then
-                    str = str:sub(1,#str-1)
-                    posX = posX - 1
-                    if posX == 0 then
-                        posY = posY - 1
-                        posX = sizeX
-                    end
-                    vterm.setCursorPos(posX,posY)
-                    vterm.setChar("",posX,posY)
-                end
-            else
-                if posX > sizeX then
-                    posX = 1
-                    posY = posY + 1
-                    vterm.setCursorPos(posX,posY)
-                    if posY > sizeY then
-                        vterm.scroll(1)
-                    end
-                end
-                vterm.write(n[3])
-                str = str .. n[3]
-            end
-        end
-    end
-    return str
-end
 
 _G.vterm = vterm
 _G.sleep = sleep
-_G.input = input
 _G.yield = coroutine.yield
 _G.log = print
 
@@ -152,7 +114,12 @@ local function launchProgram(path,...progargs)
             if not worked then
                 error("Failure while loading program "..path.."! Err="..progFunc,0);
             else
-                table.insert(coroutineStack,progFunc)
+				local progTab = {
+					c=progFunc,
+					e={},
+					p=false
+				}
+                table.insert(coroutineStack,progTab)
             end
         else
             error("Failed to load program "..path.."! Err="..err,0)
@@ -232,6 +199,7 @@ globalApi.print = vterm.print
 globalApi.launchProgram = launchProgram
 globalApi._G = globalApi
 
+local runningTask = nil
 local driverApi = {}
 driverApi.installDriver = installDriver
 driverApi.getUserlandGlobals = makeGetter(globalApi)
@@ -243,14 +211,19 @@ function driverApi.getBackgroundTaskStatus(taskId)
 end
 function driverApi.addBackgroundTask(taskId,func)
 	if not driverStack[taskId] then
-		driverStack[taskId] = coroutine.create(func)
+		local c = coroutine.create(func)
+		debug.sethook(tab.c,coroutine.yield,"l",100)
+		driverStack[taskId] = {c=c,p=true,e={}}
+		return true
 	end
 	return false
 end
 function driverApi.killBackgroundTask(taskId)
 	driverStack[taskId] = nil
 end
-
+function driverApi.getRunningCoroutineTable()
+	return runningTask
+end
 --add APIs to driverland globals
 driverGlobalApi = deepCopyTable(_G)
 driverGlobalApi.debug = nil
@@ -261,7 +234,7 @@ driverGlobalApi.driver = driverApi
 driverGlobalApi._G = driverGlobalApi
 
 --start the coroutine loop
-table.insert(coroutineStack,coroutine.create(function()
+table.insert(coroutineStack,{c=coroutine.create(function()
 	vterm.print()
 	local suc,err = pcall(launchProgram,_SYSTEM_DISK..":TRASHY/shell.lua","THIS_IS_THE_KERNEL_PLEASE_LAUNCH_THE_SHELL");
 	if not suc then
@@ -275,7 +248,7 @@ table.insert(coroutineStack,coroutine.create(function()
     while true do
         coroutine.yield()
     end
-end))
+end)})
 
 print("Starting driver system...")
 for _,v in pairs(files.getChildren(_SYSTEM_DISK..":TRASHY/drivers")) do
@@ -283,14 +256,24 @@ for _,v in pairs(files.getChildren(_SYSTEM_DISK..":TRASHY/drivers")) do
 end
 
 while true do
-    local currentProg = coroutineStack[#coroutineStack]
+    local currentProgTab = coroutineStack[#coroutineStack]
+	local currentProg = currentProgTab.c
     local currentEvent = getNextEvent()
+	local event = next(currentEvent) == nil 
     if currentProg == nil then
         while true do
 			log(#coroutineStack)
             error("This REALLY shouldn't happen! Please report this bug to redtoast/NeetComputers!")
         end
     else
+		if event then
+			for _,v in ipairs(coroutineStack) do
+				if v.p then
+					table.insert(v.e,currentEvent)
+				end
+			end
+		end
+		runningTask = currentProgTab
         if coroutine.status(currentProg) == "dead" then
             table.remove(coroutineStack,#coroutineStack)
         elseif coroutine.status(currentProg) == "suspended" then
@@ -300,12 +283,18 @@ while true do
         end
     end
     for i,v in pairs(driverStack) do
-        if coroutine.status(v) == "dead" then
+		if event then
+			if v.p and next(currentEvent) == nil then
+				table.insert(v.e,currentEvent)
+			end
+		end
+		runningTask = v
+        if coroutine.status(v.c) == "dead" then
             table.remove(driverStack,i)
-        elseif coroutine.status(v) == "suspended" then
-            coroutine.resume(v,currentEvent)
+        elseif coroutine.status(v.c) == "suspended" then
+            coroutine.resume(v.c,currentEvent)
         else
-            error("Cosmic ray detected in driver stack! coroutine:"..coroutine.status(v))
+            error("Cosmic ray detected in driver stack! coroutine:"..coroutine.status(v.c))
         end
     end
     coroutine.yield()
